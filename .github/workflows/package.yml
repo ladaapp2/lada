@@ -1,0 +1,183 @@
+name: Package
+
+on: workflow_dispatch
+
+jobs:
+  package-linux:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system deps
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            ffmpeg \
+            gettext \
+            gcc python3-dev pkg-config \
+            libgirepository-2.0-dev libcairo2-dev libadwaita-1-dev gir1.2-gstreamer-1.0 \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pulseaudio gstreamer1.0-alsa gstreamer1.0-tools gstreamer1.0-libav
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Sync dependencies
+        run: uv sync --extra nvidia --extra gui
+
+      - name: Apply patches
+        run: |
+          patch -u -p1 -d .venv/lib/python3.13/site-packages < patches/increase_mms_time_limit.patch
+          patch -u -p1 -d .venv/lib/python3.13/site-packages < patches/remove_ultralytics_telemetry.patch
+          patch -u -p1 -d .venv/lib/python3.13/site-packages < patches/fix_loading_mmengine_weights_on_torch26_and_higher.diff
+
+      - name: Compile translations
+        run: bash translations/compile_po.sh
+
+      - name: Package with PyInstaller
+        run: |
+          uv pip install pyinstaller
+          uv run --no-sync pyinstaller --noconfirm ./packaging/windows/lada.spec -- --extra=nvidia
+
+      - name: Create artifact
+        run: tar -czf lada-linux.tar.gz -C dist lada
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: lada-linux
+          path: lada-linux.tar.gz
+
+  package-macos:
+    if: false
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Homebrew deps
+        run: brew install ffmpeg uv gtk4 libadwaita adwaita-icon-theme gstreamer
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Sync dependencies
+        run: uv sync --extra cpu --extra gui
+
+  package-windows:
+    runs-on: windows-latest
+    env:
+      GVSBUILD_VERSION: "2026.1.0"
+      PYTHON_VERSION: "3.13.12"
+      PYINSTALLER_VERSION: "6.18.0"
+      GVSBUILD_DIR: "C:/gtk-build"
+    strategy:
+      matrix:
+        value: [nvidia, intel]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Restore gvsbuild cache
+        id: cache-gvsbuild
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.GVSBUILD_DIR }}
+          key: gvsbuild-${{ env.GVSBUILD_VERSION }}-${{ hashFiles('patches/gvsbuild_*.patch') }}
+
+      - name: Install systems deps
+        if: steps.cache-gvsbuild.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          uv venv --clear
+          .venv\Scripts\Activate.ps1
+ 
+          uv pip install gvsbuild==$env:GVSBUILD_VERSION --with "setuptools<81.0.0"
+          uv pip install patch
+          uv run --no-project python -m patch -p1 -d .venv/lib/site-packages patches/gvsbuild_ffmpeg.patch
+          uv pip uninstall patch
+
+          gvsbuild build `
+              --ninja-opts -j2 `
+              --configuration=release `
+              --build-dir=$env:GVSBUILD_DIR `
+              --enable-gi `
+              --py-wheel `
+              gtk4 adwaita-icon-theme pygobject libadwaita gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-plugin-gtk4 gst-libav gst-python gettext
+
+          deactivate
+          Remove-Item -Path .venv -Recurse -Force
+
+      - name: Install python deps
+        shell: pwsh
+        run: |
+          uv venv --clear
+          .venv\Scripts\Activate.ps1
+
+          uv sync --active --frozen --extra "${{ matrix.value }}" --no-editable --no-install-project
+          uv pip install --no-deps '.'
+          uv pip install --force-reinstall (Resolve-Path "$env:GVSBUILD_DIR\x64\release\python\pygobject*.whl").Path
+          uv pip install --force-reinstall (Resolve-Path "$env:GVSBUILD_DIR\gtk\x64\release\python\pycairo*.whl").Path
+
+          uv pip install pyinstaller==$env:PYINSTALLER_VERSION
+
+          uv pip install patch
+          uv run --no-project python -m patch -p1 -d .venv/lib/site-packages patches/increase_mms_time_limit.patch
+          uv run --no-project python -m patch -p1 -d .venv/lib/site-packages patches/remove_ultralytics_telemetry.patch
+          uv run --no-project python -m patch -p1 -d .venv/lib/site-packages patches/fix_loading_mmengine_weights_on_torch26_and_higher.diff
+          uv pip uninstall patch
+
+      - name: Compile translations
+        shell: pwsh
+        run: |
+          # Adjust PATH to include gettext tools used in translation compile script
+          $path_backup = $env:Path
+          $gtk_bin_dir = (Resolve-Path "$env:GVSBUILD_DIR\gtk\x64\release\bin").Path
+          $env:Path = $gtk_bin_dir + ";" + $env:Path
+      
+          & ./translations/compile_po.ps1 --release
+      
+          $env:Path = $path_backup
+
+      - name: Package Lada
+        shell: pwsh
+        run: |
+          .venv\Scripts\Activate.ps1
+      
+          $release_dir = (Resolve-Path "env:GVSBUILD_DIR\gtk\x64\release").Path
+          $env:Path = $release_dir + "\bin;" + $env:Path
+          $env:LIB = $release_dir + "\lib;" + $env:LIB
+          $env:INCLUDE = $release_dir + "\include;" + $release_dir + "\include\cairo;" + $release_dir + "\include\glib-2.0;" + $release_dir + "\include\gobject-introspection-1.0;" + $release_dir + "\lib\glib-2.0\include;" + $env:INCLUDE
+      
+          uv run --no-project pyinstaller --noconfirm ./packaging/windows/lada.spec -- --extra="${{ matrix.value }}"
+
+      - name: Create artifacts
+        shell: pwsh
+        run: |
+          .venv\Scripts\Activate.ps1
+          $version = $(uv run --no-project python -c 'import lada; print(lada.VERSION)')
+          deactivate
+
+          $archive_path = "./dist/lada-v{0}_windows_{1}.7z" -f $version,"${{ matrix.value }}"
+
+
+          # Split .7z archive into 2GB chunks so they can be uploaded to GitHub Releases
+          7z.exe a -v1999m $archive_path "./dist/lada"
+
+          # If single chunk rename to remove suffix
+          $single_chunk = (Get-ChildItem "./dist" -filter "*.7z*" | Where-Object Name -Match '\.7z.\d{3}$' | Measure-Object).Count -eq 1
+          if ($single_chunk) {
+              $old = "./dist/lada-v{0}_windows_{1}.7z.001" -f $version,$extra
+              $new = $archive_path
+              mv $old $new
+          }
+
+          7z a "./dist/lada_windows_dependencies_python313_gvsbuild$env:GVSBUILD_VERSION.7z" "$env:GVSBUILD_DIR/gtk/x64/release"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            ./dist/lada-v*.7z.*
+            ./dist/lada-v*.7z
+            ./dist/lada_windows_dependencies_*.7z
+
+
