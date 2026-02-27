@@ -342,8 +342,9 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     permissions:
-      "contents": "write"
-      "id-token": "write"
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -364,6 +365,11 @@ jobs:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
+
+      - name: Attest
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/*
 
       - name: Create GitHub Release
         run: |
