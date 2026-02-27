@@ -19,7 +19,6 @@ def _get_version(version: str):
     try:
         import pathlib
         import subprocess
-        from lada.utils import os_utils
         here = pathlib.Path(__file__).parent.resolve()
         startup_info = None
         if sys.platform == "win32":
