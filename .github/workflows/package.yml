@@ -27,6 +27,13 @@ jobs:
           echo "LADA_VERSION=$version" >> $GITHUB_ENV
           echo "Lada version: $version"
 
+      - name: Determine image tag
+        run: |
+          # image tags cannot contain + character so for dev versions we need to adjust
+          tag="${LADA_VERSION//+/-}"
+          echo "LADA_IMAGE_TAG=$tag" >> $GITHUB_ENV
+          echo "Image tag: $tag"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -45,7 +52,7 @@ jobs:
           build-args: SOURCE_DATE_EPOCH=0
           push: false # todo
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.LADA_VERSION }}
+            ${{ env.IMAGE_NAME }}:${{ env.LADA_IMAGE_TAG }}
             ${{ env.IMAGE_NAME }}:latest
 
   package-macos:
@@ -119,7 +126,6 @@ jobs:
         run: |
           source .venv/bin/activate
           uv run --no-project pyinstaller --noconfirm packaging/macOS/lada.spec
-          ls
           ls dist
 
       - name: Create artifacts
@@ -172,18 +178,13 @@ jobs:
       - name: Check if artifact exists
         id: check_artifact
         run: |
-          # Set variables
           $artifactName = "gvsbuild_${env:GVSBUILD_VERSION}_py313_v${env:LADA_VERSION}.7z"
-          $apiUrl = "https://api.github.com/repos/${{ github.repository }}/actions/artifacts"
+          $apiUrl = "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=$artifactName"
 
-          # Fetch the list of artifacts
           $response = curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$apiUrl"
           echo "artifacts api esponse: $response"
 
-          # Check if the artifact exists
-          $artifact = $response | jq -r ".artifacts[] | select(.name == \"$artifactName\")"
-
-          if ($artifact) {
+          if ($response -match '"total_count": 1') {
             echo "Artifact $artifactName already exists."
             echo "artifactExists=true" >> $env:GITHUB_ENV
           } else {
@@ -240,7 +241,7 @@ jobs:
           }
 
       - name: Upload artifact
-        if: env.artifactExists == 'false' || steps.cache-gvsbuild.outputs.cache-hit != 'true'
+        if: steps.cache-gvsbuild.outputs.cache-hit != 'true' || env.artifactExists == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-windows-gvsbuild-dir
