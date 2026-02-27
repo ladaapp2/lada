@@ -166,12 +166,7 @@ jobs:
         id: cache-gvsbuild
         uses: actions/cache@v5
         with:
-          path: |
-            ${{ env.GVSBUILD_DIR }}/**
-            !${{ env.GVSBUILD_DIR }}/build/**
-            !${{ env.GVSBUILD_DIR }}/logs/**
-            !${{ env.GVSBUILD_DIR }}/tools/**
-            !${{ env.GVSBUILD_DIR }}/export/**
+          path: ${{ env.GVSBUILD_DIR }}/gtk/**
           key: gvsbuild-${{ env.GVSBUILD_VERSION }}-${{ hashFiles('patches/gvsbuild_*.patch') }}
 
       - name: Build
